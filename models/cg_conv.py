@@ -49,7 +49,6 @@ class CGConv(MessagePassing):
         self.lin_s.reset_parameters()
 
     def forward(self, x, edge_index, edge_attr):
-        """"""
         return self.propagate(edge_index, x=x, edge_attr=edge_attr)
 
     def message(self, x_i, x_j, edge_attr):

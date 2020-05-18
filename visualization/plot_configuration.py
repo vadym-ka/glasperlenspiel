@@ -29,6 +29,7 @@ def main():
 
     s = ''.join(args.infile.readlines())
     j = json.loads(s)
+    print(j)
 
     loop = asyncio.get_event_loop()
     loop.run_until_complete(execute_commands(j["commands"], args.path))

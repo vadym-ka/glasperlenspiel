@@ -281,7 +281,7 @@ private:
   template <typename T>
   void add_new(T o) {
     // do stuff
-    pool_.push_back(std::make_unique<T>(o));
+    pool_.push_back(std::make_shared<T>(o));
   }
 
   template<typename T>
@@ -302,8 +302,7 @@ private:
     return false;
   }
 
-  std::vector<std::unique_ptr<Object>> pool_;
-
+  std::vector<std::shared_ptr<Object>> pool_;
 };
 
 
@@ -359,16 +358,18 @@ public:
     if (tag_by_vertex_id_.count(v)) { return; }
     complexity_[v] = comp;
     tag_by_vertex_id_[v] = tag;
+
   }
 
   void add_edge(Id v, Id u, EdgeTag tag) {
     if (v > u) { std::swap(v, u); }
     auto edge = Edge(v, u, tag);
-    if (!edges_.count(edge)) {
-      auto [it, _] = edges_.insert(edge);
-      edges_by_vertex_id_[v].push_back(it);
-      edges_by_vertex_id_[u].push_back(it);
-    }
+    if (edges_.count(edge)) { return; }
+
+    auto [it, _] = edges_.insert(edge);
+    edges_by_vertex_id_[v].push_back(it);
+    edges_by_vertex_id_[u].push_back(it);
+
   }
 
   int64_t complexity(Id id) { return complexity_[id]; }
@@ -409,25 +410,20 @@ public:
     }
     w.EndArray();
 
+    w.Key("info");
+    w.StartObject();
+    w.Key("shape");
+    w.StartArray();
+    w.Int64(tag_by_vertex_id_.size());
+    w.Int64(edges_.size());
+    w.EndArray();
+    w.EndObject();
+
     w.EndObject();
     w.Flush();
 
     return std::string(buffer.GetString());
 
-    std::string ans;
-    ans += "shape: " + std::to_string(tag_by_vertex_id_.size()) + ":" + std::to_string(edges_.size()) + "\n";
-    ans += "V: ";
-    for (auto& [k, v] : tag_by_vertex_id_) {
-      ans += " { id: " + std::to_string(k) + " , tag: " + std::to_string(static_cast<size_t>(v)) + " comp: " + std::to_string(complexity_[k]) + " } ";
-    }
-    ans += "\nE: ";
-
-    for (auto& e : edges_) {
-      ans += " ( " + std::to_string(e.v) + ", " + std::to_string(e.u) + ", " + std::to_string(static_cast<size_t>(e.tag)) + " ) ";
-    }
-    ans += "\n";
-
-    return ans;
   }
 
 private:
@@ -627,21 +623,31 @@ class Backend {
 public:
   using Id = DumbStorage::Id;
   Backend() {}
+
+  void reset() {
+    action_by_tag_.clear();
+    storage_ = DumbStorage();
+    graph_ = Graph();
+
+    init(false);
+    generate_noise(4, 0);
+    dump_state();
+  }
+
+  void save() {
+    // saved_action_by_tag_ = action_by_tag_;
+    saved_storage_ = storage_;
+    saved_graph_ = graph_;
+  }
+
+  void load() {
+    // action_by_tag_ = saved_action_by_tag_;
+    storage_ = saved_storage_;
+    graph_ = saved_graph_;
+  }
+
   void run() {
-    init();
-    // generate_noise();
-
-    std::cout << graph_.to_json() << std::endl;
-    std::cout << storage_.to_json() << std::endl;
-
-    // std::ofstream f;
-    // f.open("graph.json");
-    // f << graph_.to_json();
-    // f.close();
-
-    // f.open("storage.json");
-    // f << storage_.to_json();
-    // f.close();
+    reset();
 
     while (true) {
       std::string raw_query;
@@ -650,24 +656,46 @@ public:
       rapidjson::Document json_query;
       json_query.Parse(raw_query.c_str());
 
-      Graph::Id action_id = json_query["action_id"].GetInt();
-      if (action_id == DumbStorage::kNoId) { break; }
+      std::string type = json_query["query_type"].GetString();
 
-      ActionTag action_tag = static_cast<ActionTag>(action_id);
-      std::vector<Graph::Id> params;
-      for (auto& v : json_query["params"].GetArray()) { params.push_back(v.GetInt()); }
-      auto new_ids = action(action_tag, params);
+      if (type == "action") {
+        Graph::Id action_id = json_query["action_id"].GetInt();
+        assert(action_id != DumbStorage::kNoId);
+        // if (action_id == DumbStorage::kNoId) { break; }
 
-      std::string json_state;
-      json_state = graph_.to_json();
-
-      // std::cout << json_state << std::endl;
-      std::cout << new_ids << " " << graph_.to_json() << std::endl;
+        ActionTag action_tag = static_cast<ActionTag>(action_id);
+        std::vector<Graph::Id> params;
+        for (auto &v : json_query["params"].GetArray()) {
+          params.push_back(v.GetInt());
+        }
+        auto new_ids = action(action_tag, params);
+        std::cout << graph_.shape() << std::endl;
+        // std::cout << new_ids << " " << graph_.to_json() << std::endl;
+        // std::cout << graph_.to_json() << std::endl;
+      } else if (type == "graph") {
+        std::string json_state;
+        json_state = graph_.to_json();
+        std::cout << json_state << std::endl;
+      } else if (type == "storage") {
+        std::string json_state;
+        json_state = storage_.to_json();
+        std::cout << json_state << std::endl;
+      } else if (type == "close") {
+        // close();
+        break;
+      } else if (type == "reset") {
+        reset();
+      } else if (type == "save") {
+        save();
+      } else if (type == "load") {
+        load();
+      } else {
+        assert(false);
+      }
     }
-
   }
 
-  void close() { std::cerr << "closed" << std::endl; }
+  void close() { std::cout << "closed" << std::endl; }
 
   std::vector<Graph::Id> action(ActionTag tag, const std::vector<Graph::Id>& arguments) {
     // TODO: add log
@@ -678,9 +706,7 @@ public:
   }
 
 private:
-  void generate_noise() {
-    const int64_t max_complexity = 3;
-    const int64_t iters = 0;
+  void generate_noise(int64_t max_complexity = 4, int64_t iters = 100) {
     for (size_t i = 0; i < iters; ++i) {
       std::map<Type, std::vector<Id>> ids_by_type;
       for (auto tag : { VertexTag::Point, VertexTag::Line }) {
@@ -706,7 +732,21 @@ private:
 
   }
 
-  void init() {
+  void dump_state() {
+    // std::cout << graph_.to_json() << std::endl;
+    // std::cout << storage_.to_json() << std::endl;
+
+    std::ofstream f;
+    f.open("graph.json");
+    f << graph_.to_json();
+    f.close();
+
+    f.open("storage.json");
+    f << storage_.to_json();
+    f.close();
+  }
+
+  void init(bool add_h) {
     {
       add_action_to_pool<LineByTwoPoints>();
       add_action_to_pool<PerpendicularLine>();
@@ -727,7 +767,6 @@ private:
     graph_.add_vertex(1, VertexTag::Point, 0);
     graph_.add_vertex(2, VertexTag::Point, 0);
 
-    bool add_h = true;
     if (add_h) {
       auto ab_id = action(ActionTag::LineByTwoPoints, {0, 1})[0];
       auto ac_id = action(ActionTag::LineByTwoPoints, {0, 2})[0];
@@ -818,7 +857,10 @@ private:
   }
 
   std::map<ActionTag, std::unique_ptr<Action>> action_by_tag_;
-
   DumbStorage storage_;
   Graph graph_;
+
+  std::map<ActionTag, std::unique_ptr<Action>> saved_action_by_tag_;
+  DumbStorage saved_storage_;
+  Graph saved_graph_;
 };

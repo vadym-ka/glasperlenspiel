@@ -5,8 +5,7 @@ int main() {
 
   auto b = Backend();
   b.run();
-  b.close();
-
+  // b.close();
 
   return 0;
 }
